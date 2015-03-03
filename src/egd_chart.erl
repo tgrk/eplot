@@ -6,21 +6,28 @@
 %%       * lines color
 %%       * vertical, horizontal, no lines
 %%       * antialiasing?
+%%       * performance?
 %%
 -module(egd_chart).
 
+%% API
 -export([graph/1,
          graph/2,
          bar2d/1,
          bar2d/2
         ]).
-
 -export([smart_ticksize/3]).
+
+%% Types
+-type data() :: list({any(), any()}).
+-type opts() :: list({atom(), any()}).
+
+-define(DEFAULT_FONT, "6x11_latin1.wingsfont").
 
 -record(chart, {
           type          = png,
           render_engine = opaque,
-          margin        = 30,                   % margin
+          margin        = 40,                   % Margin
           bbx           = {{30,30}, {130,130}}, % Graph boundingbox (internal)
           ibbx          = undefined,
           ranges        = {{0,0}, {100,100}},   % Data boundingbox
@@ -29,17 +36,18 @@
           dxdy          = {1.0,1.0},
           ticksize      = {10,10},
           precision     = {2,2},
+          font          = ?DEFAULT_FONT,
 
-          %% colors
-          bg_rgba       = {230, 230, 255, 255},
-          margin_rgba   = {255, 255, 255, 255},
-          graph_rgba    = [],                   % ordered color convention
+          %% default colors
+          bg_rgba       = {230, 230, 255, 255}, % graph background color
+          margin_rgba   = {255, 255, 255, 255}, % margin background color
+          graph_rgba    = undefined,            % use colorscheme colors
 
           %% graph specific
           x_label       = "X",
           y_label       = "Y",
-          x_label_fun   = fun(X) -> X end,
-          y_label_fun   = fun(Y) -> Y end,
+          x_label_fun   = fun(X) -> X end,      % Transform X value using fun
+          y_label_fun   = fun(Y) -> Y end,      % Transform Y value using fun
           graph_name_yo = 10,                   % Name offset from top
           graph_name_yh = 10,                   % Name drop offset
           graph_name_xo = 10,                   % Name offset from RHS
@@ -51,17 +59,25 @@
 
 -define(float_error, 0.0000000000000001).
 
-graph(Data) -> graph(Data, [{width, 300}, {height, 300}]).
+%%%============================================================================
+%%% API
+%%%============================================================================
+-spec graph(data()) -> binary() | no_return().
+graph(Data) ->
+    graph(Data, [{width, 300}, {height, 300}]).
 
+-spec graph(data(), opts()) -> binary() | no_return().
 graph(Data, Options) ->
-    Chart = graph_chart(Options,Data),
+    Chart = graph_chart(Options, Data),
     Im = egd:create(Chart#chart.width, Chart#chart.height),
-    LightBlue = egd:color(Chart#chart.bg_rgba),
+
+    %% background
+    BgColor = egd:color(Chart#chart.bg_rgba),
     {Pt1, Pt2} = Chart#chart.bbx,
-    egd:filledRectangle(Im, Pt1, Pt2, LightBlue), % background
+    egd:filledRectangle(Im, Pt1, Pt2, BgColor),
 
     % Fonts? Check for text enabling
-    Font = egd_font:load(filename:join([code:priv_dir(percept), "fonts", "6x11_latin1.wingsfont"])),
+    Font = load_font(Chart),
 
     draw_graphs(Data, Chart, Im),
 
@@ -84,43 +100,82 @@ graph(Data, Options) ->
     draw_xlabel(Chart, Im, Font),
     draw_ylabel(Chart, Im, Font),
 
-    Png = egd:render(Im, Chart#chart.type, [{render_engine, Chart#chart.render_engine}]),
-    egd:destroy(Im),
-    try erlang:exit(Im, normal) catch _:_ -> ok end,
-    Png.
+    render_graph(Im, Chart).
 
+%% @doc
+%% Abstract:
+%% The graph is devided into column where each column have
+%% one or more bars.
+%% Each column is associated with a name.
+%% Each bar may have a secondary name (a key).
+%% @end
+-spec bar2d(data()) -> binary() | no_return().
+bar2d(Data) ->
+    bar2d(Data, [{width, 600}, {height, 600}]).
+
+-spec bar2d(data(), opts()) -> binary() | no_return().
+bar2d(Data0, Options) ->
+    {ColorMap, Data} = bar2d_convert_data(Data0),
+    Chart = bar2d_chart(Options, Data),
+    Im = egd:create(Chart#chart.width, Chart#chart.height),
+
+    %% background
+    BgColor = egd:color(Chart#chart.bg_rgba),
+    {Pt1, Pt2} = Chart#chart.bbx,
+    egd:filledRectangle(Im, Pt1, Pt2, BgColor),
+
+    %% Fonts? Check for text enabling
+    Font = load_font(Chart),
+
+    draw_bar2d_ytick(Im, Chart, Font),
+
+    %% Color map texts for sets
+    draw_bar2d_set_colormap(Im, Chart, Font, ColorMap),
+
+    %% Draw bars
+    draw_bar2d_data(Data, Chart, Font, Im),
+
+    egd:rectangle(Im, Pt1, Pt2, egd:color({0,0,0})),
+
+    render_graph(Im, Chart).
+
+%%%============================================================================
+%%% Internal functions
+%%%============================================================================
 graph_chart(Opts, Data) ->
-
     {{X0,Y0},{X1,Y1}} = proplists:get_value(ranges, Opts, ranges(Data)),
-    Type      = proplists:get_value(type,          Opts, png),
-    Width     = proplists:get_value(width,         Opts, 600),
-    Height    = proplists:get_value(height,        Opts, 600),
-    Xlabel    = proplists:get_value(x_label,       Opts, "X"),
-    Ylabel    = proplists:get_value(y_label,       Opts, "Y"),
-    XlabelFun = proplists:get_value(x_label_fun,   Opts, fun (X) -> X end),
-    YlabelFun = proplists:get_value(y_label_fun,   Opts, fun (Y) -> Y end),
+    Type       = proplists:get_value(type,          Opts, png),
+    Width      = proplists:get_value(width,         Opts, 600),
+    Height     = proplists:get_value(height,        Opts, 600),
+    Xlabel     = proplists:get_value(x_label,       Opts, "X"),
+    Ylabel     = proplists:get_value(y_label,       Opts, "Y"),
+    XlabelFun  = proplists:get_value(x_label_fun,   Opts, fun (X) -> X end),
+    YlabelFun  = proplists:get_value(y_label_fun,   Opts, fun (Y) -> Y end),
 
     %% multiple ways to set ranges
-    XrangeMax = proplists:get_value(x_range_max,   Opts, X1),
-    XrangeMin = proplists:get_value(x_range_min,   Opts, X0),
-    YrangeMax = proplists:get_value(y_range_max,   Opts, Y1),
-    YrangeMin = proplists:get_value(y_range_min,   Opts, Y0),
-    {Xr0,Xr1} = proplists:get_value(x_range,       Opts, {XrangeMin, XrangeMax}),
-    {Yr0,Yr1} = proplists:get_value(y_range,       Opts, {YrangeMin, YrangeMax}),
-    Ranges    = {{Xr0, Yr0}, {Xr1,Yr1}},
+    XrangeMax  = proplists:get_value(x_range_max,   Opts, X1),
+    XrangeMin  = proplists:get_value(x_range_min,   Opts, X0),
+    YrangeMax  = proplists:get_value(y_range_max,   Opts, Y1),
+    YrangeMin  = proplists:get_value(y_range_min,   Opts, Y0),
+    {Xr0, Xr1} = proplists:get_value(x_range,       Opts, {XrangeMin, XrangeMax}),
+    {Yr0, Yr1} = proplists:get_value(y_range,       Opts, {YrangeMin, YrangeMax}),
+    Ranges     = {{Xr0, Yr0}, {Xr1,Yr1}},
 
-    Precision = precision_level(Ranges, 10),
-    {TsX,TsY} = smart_ticksize(Ranges, 10),
-    XTicksize = proplists:get_value(x_ticksize,    Opts, TsX),
-    YTicksize = proplists:get_value(y_ticksize,    Opts, TsY),
-    Ticksize  = proplists:get_value(ticksize,      Opts, {XTicksize, YTicksize}),
-    Margin    = proplists:get_value(margin,        Opts, 30),
-    BGC       = proplists:get_value(bg_rgba,       Opts, {230, 230, 255, 255}),
-    MGC       = proplists:get_value(margin_rgba,   Opts, {230, 230, 255, 255}),
-    Renderer  = proplists:get_value(render_engine, Opts, opaque),
+    Precision  = precision_level(Ranges, 10),
+    {TsX, TsY} = smart_ticksize(Ranges, 10),
+    XTicksize  = proplists:get_value(x_ticksize,    Opts, TsX),
+    YTicksize  = proplists:get_value(y_ticksize,    Opts, TsY),
+    Ticksize   = proplists:get_value(ticksize,      Opts, {XTicksize, YTicksize}),
+    Margin     = proplists:get_value(margin,        Opts, 30),
+    BGC        = proplists:get_value(bg_rgba,       Opts, {230, 230, 255, 255}),
+    MGC        = proplists:get_value(margin_rgba,   Opts, {230, 230, 255, 255}),
+    GC         = proplists:get_value(graph_rgba,    Opts, undefined),
+    Renderer   = proplists:get_value(render_engine, Opts, opaque),
 
-    BBX       = {{Margin, Margin}, {Width - Margin, Height - Margin}},
-    DxDy      = update_dxdy(Ranges,BBX),
+    BBX        = {{Margin, Margin}, {Width - Margin, Height - Margin}},
+    DxDy       = update_dxdy(Ranges,BBX),
+
+    %%TODO: validate opts eg ticksize cannot be {0,0}
 
     #chart{
        type          = Type,
@@ -138,19 +193,22 @@ graph_chart(Opts, Data) ->
        dxdy          = DxDy,
        render_engine = Renderer,
        bg_rgba       = BGC,
-       margin_rgba   = MGC
+       margin_rgba   = MGC,
+       graph_rgba    = GC
     }.
 
 draw_ylabel(Chart, Im, Font) ->
+    %%TODO: apply y_label_fun
     Label = string(Chart#chart.y_label, 2),
     N = length(Label),
     {Fw,_Fh} = egd_font:size(Font),
-    Width = N*Fw,
+    Width = N * Fw,
     {{Xbbx,Ybbx}, {_,_}} = Chart#chart.bbx,
     Pt = {Xbbx - trunc(Width/2), Ybbx - 20},
     egd:text(Im, Pt, Font, Label, egd:color({0,0,0})).
 
 draw_xlabel(Chart, Im, Font) ->
+    %%TODO: apply x_label_fun
     Label = string(Chart#chart.x_label, 2),
     N = length(Label),
     {Fw,_Fh} = egd_font:size(Font),
@@ -163,11 +221,12 @@ draw_xlabel(Chart, Im, Font) ->
 
 draw_graphs(Datas, Chart, Im) ->
     draw_graphs(Datas, 0, Chart, Im).
-draw_graphs([],_,_,_) -> ok;
-draw_graphs([{_, Data}|Datas], ColorIndex, Chart, Im) ->
-    Color = egd_colorscheme:select(default, ColorIndex),
-    % convert data to graph data
-    % fewer pass of xy2chart
+draw_graphs([], _, _, _) -> ok;
+draw_graphs([{_, Data} | Datas], ColorIndex, Chart, Im) ->
+    Color = get_graph_color(Chart, ColorIndex),
+
+    %% convert data to graph data
+    %% fewer pass of xy2chart
     GraphData = [xy2chart(Pt, Chart) || Pt <- Data],
     draw_graph(GraphData, Color, Im),
     draw_graphs(Datas, ColorIndex + 1, Chart, Im).
@@ -200,7 +259,7 @@ draw_graph_names(Datas, Chart, Font, Im) ->
     draw_graph_names(Datas, 0, Chart, Font, Im, 0, Chart#chart.graph_name_yh).
 draw_graph_names([],_,_,_,_,_,_) -> ok;
 draw_graph_names([{Name, _}|Datas], ColorIndex, Chart, Font, Im, Yo, Yh) ->
-    Color = egd_colorscheme:select(default, ColorIndex),
+    Color = get_graph_color(Chart, ColorIndex),
     draw_graph_name_color(Chart, Im, Font, Name, Color, Yo),
     draw_graph_names(Datas, ColorIndex + 1, Chart, Font, Im, Yo + Yh, Yh).
 
@@ -310,50 +369,6 @@ draw_perf_xbar(Im, Chart, Xi) ->
       end, lists:seq(Yu,Yl,Lw)),
     ok.
 
-
-%% bar2d/1 and bar2d/2
-%% In:
-%%	Data :: [{ Datasetname :: string(), [{Keyname :: atom() | string(), number() :: Value}]}]
-%%		Datasetname = Name of this dataset (the color name)
-%%		Keyname = The name of each grouping
-%%	Options :: [{Key, Value}]
-%%		Key = bar_width
-%%		Key = column_width
-%%		Colors?
-%% Abstract:
-%%	The graph is devided into column where each column have
-%%	one or more bars.
-%%	Each column is associated with a name.
-%%	Each bar may have a secondary name (a key).
-bar2d(Data) -> bar2d(Data, [{width, 600}, {height, 600}]).
-
-bar2d(Data0, Options) ->
-    {ColorMap, Data} = bar2d_convert_data(Data0),
-    Chart = bar2d_chart(Options, Data),
-    Im = egd:create(Chart#chart.width, Chart#chart.height),
-    LightBlue = egd:color(Chart#chart.bg_rgba),
-    {Pt1, Pt2} = Chart#chart.bbx,
-    egd:filledRectangle(Im, Pt1, Pt2, LightBlue), % background
-
-
-    % Fonts? Check for text enabling
-    Font = egd_font:load(filename:join([code:priv_dir(percept), "fonts", "6x11_latin1.wingsfont"])),
-
-    draw_bar2d_ytick(Im, Chart, Font),
-
-    % Color map texts for sets
-    draw_bar2d_set_colormap(Im, Chart, Font, ColorMap),
-
-    % Draw bars
-    draw_bar2d_data(Data, Chart, Font, Im),
-
-    egd:rectangle(Im, Pt1, Pt2, egd:color({0,0,0})),
-    Png = egd:render(Im, Chart#chart.type, [{render_engine, Chart#chart.render_engine}]),
-    egd:destroy(Im),
-    try erlang:exit(Im, normal) catch _:_ -> ok end,
-    Png.
-
-% [{Dataset, [{Key, Value}]}] -> [{Key, [{Dataset, Value}]}]
 bar2d_convert_data(Data) -> bar2d_convert_data(Data, 0,{[], []}).
 bar2d_convert_data([], _, {ColorMap, Out}) -> {lists:reverse(ColorMap), lists:sort(Out)};
 bar2d_convert_data([{Set, KVs}|Data], ColorIndex, {ColorMap, Out}) ->
@@ -525,11 +540,9 @@ draw_bar2d_data_bars([{{Color,_Set}, Value}|Bars], Chart, Font, Im, Bx, Bo,CS) -
     egd:rectangle(Im, Pt1, Pt2, Black),
     draw_bar2d_data_bars(Bars, Chart, Font, Im, Bx + Bo, Bo, CS + CS).
 
-%%==========================================================================
-%%
-%%              Aux functions
-%%
-%%==========================================================================
+%%%============================================================================
+%%% Aux functions
+%%%============================================================================
 xy2chart({X,Y}, #chart{
                    ranges = {{Rx0,Ry0}, {_Rx1,_Ry1}},
                    bbx    = {{Bx0,By0}, {_Bx1, By1}},
@@ -581,11 +594,11 @@ precision_level(S, E, N) when is_number(S), is_number(E) ->
     % Calculate stepsize then 'humanize' the value to a human pleasing format.
     R = abs((E - S))/N,
     if
-	abs(R) < ?float_error -> 2;
-	true ->
-	    % get the ratio on the form of 2-3 significant digits.
-	    V =  2 - math:log10(R),
-	    trunc(V + 0.5)
+        abs(R) < ?float_error -> 2;
+        true ->
+            %% get the ratio on the form of 2-3 significant digits.
+            V =  2 - math:log10(R),
+            trunc(V + 0.5)
     end;
 precision_level(_, _, _) -> 2.
 
@@ -607,21 +620,33 @@ update_dxdy({{Rx0, Ry0}, {Rx1, Ry1}}, {{Bx0,By0},{Bx1,By1}}) ->
     Dy = divide((By1 - By0),(Ry1 - Ry0)),
     {Dx,Dy}.
 
-divide(_T,N) when abs(N) < ?float_error -> 0.0;
-%divide(T,N) when abs(N) < ?float_error -> exit({bad_divide, {T,N}});
-divide(T,N) -> T/N.
+divide(_T, N) when abs(N) < ?float_error -> 0.0;
+%divide(T, N) when abs(N) < ?float_error -> exit({bad_divide, {T,N}});
+divide(T, N) -> T / N.
 
-%print_info_chart(Chart) ->
-%    io:format("Chart ->~n"),
-%    io:format("    type:     ~p~n", [Chart#chart.type]),
-%    io:format("    margin:   ~p~n", [Chart#chart.margin]),
-%    io:format("    bbx:      ~p~n", [Chart#chart.bbx]),
-%    io:format("    ticksize: ~p~n", [Chart#chart.ticksize]),
-%    io:format("    ranges:   ~p~n", [Chart#chart.ranges]),
-%    io:format("    width:    ~p~n", [Chart#chart.width]),
-%    io:format("    height:   ~p~n", [Chart#chart.height]),
-%    io:format("    dxdy:     ~p~n", [Chart#chart.dxdy]),
-%    ok.
+get_graph_color(Chart, ColorIndex) ->
+    case Chart#chart.graph_rgba of
+        undefined ->
+            egd_colorscheme:select(default, ColorIndex);
+        UserDefined ->
+            egd:color(UserDefined)
+    end.
+
+render_graph(Im, Chart) ->
+    Output = egd:render(Im, Chart#chart.type,
+                        [{render_engine, Chart#chart.render_engine}]),
+    egd:destroy(Im),
+    try erlang:exit(Im, normal) catch _:_ -> ok end,
+    Output.
+
+load_font(Chart) ->
+    Path = filename:join([code:priv_dir(percept), "fonts", Chart#chart.font]),
+    case filelib:is_regular(Path) of
+        true ->
+            egd_font:load(Path);
+        false ->
+            throw({erorr, {font_not_found, Chart#chart.font}})
+    end.
 
 string(E, _P) when is_atom(E)    -> atom_to_list(E);
 string(E,  P) when is_float(E)   -> float_to_maybe_integer_to_string(E, P);
