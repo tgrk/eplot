@@ -198,17 +198,15 @@ graph_chart(Opts, Data) ->
     }.
 
 draw_ylabel(Chart, Im, Font) ->
-    %%TODO: apply y_label_fun
     Label = string(Chart#chart.y_label, 2),
     N = length(Label),
-    {Fw,_Fh} = egd_font:size(Font),
+    {Fw, _Fh} = egd_font:size(Font),
     Width = N * Fw,
-    {{Xbbx,Ybbx}, {_,_}} = Chart#chart.bbx,
-    Pt = {Xbbx - trunc(Width/2), Ybbx - 20},
+    {{Xbbx, Ybbx}, {_,_}} = Chart#chart.bbx,
+    Pt = {Xbbx - trunc(Width / 2), Ybbx - 20},
     egd:text(Im, Pt, Font, Label, egd:color({0,0,0})).
 
 draw_xlabel(Chart, Im, Font) ->
-    %%TODO: apply x_label_fun
     Label = string(Chart#chart.x_label, 2),
     N = length(Label),
     {Fw,_Fh} = egd_font:size(Font),
@@ -257,7 +255,8 @@ draw_graph_line(Pt1, Pt2, Color, Im) ->
 %% name and color information
 draw_graph_names(Datas, Chart, Font, Im) ->
     draw_graph_names(Datas, 0, Chart, Font, Im, 0, Chart#chart.graph_name_yh).
-draw_graph_names([],_,_,_,_,_,_) -> ok;
+draw_graph_names([], _, _, _, _, _, _) ->
+    ok;
 draw_graph_names([{Name, _}|Datas], ColorIndex, Chart, Font, Im, Yo, Yh) ->
     Color = get_graph_color(Chart, ColorIndex),
     draw_graph_name_color(Chart, Im, Font, Name, Color, Yo),
@@ -271,10 +270,10 @@ draw_graph_name_color(Chart, Im, Font, Name, Color, Yh) ->
     LPt1 = {X1 - Xo - Xl, Y0 + Yo + Yh},
     LPt2 = {X1 - Xo, Y0 + Yo + Yh},
 
-    {Fw,Fh} = egd_font:size(Font),
-    Str     = string(Name,2),
-    N       = length(Str),
-    TPt     = {X1 - 2*Xo - Xl - Fw*N, Y0 + Yo + Yh - trunc(Fh/2) - 3},
+    {Fw, Fh} = egd_font:size(Font),
+    Str      = string(Name,2),
+    N        = length(Str),
+    TPt      = {X1 - 2 * Xo - Xl - Fw * N, Y0 + Yo + Yh - trunc(Fh / 2) - 3},
 
     egd:filledRectangle(Im, LPt1, LPt2, Color),
     egd:text(Im, TPt, Font, Str, egd:color({0,0,0})).
@@ -316,9 +315,10 @@ draw_yticks_lp(Im, Chart, Yi, Yts, Ymax, Font) when Yi < Ymax ->
     {_, Precision} = Chart#chart.precision,
     draw_perf_ybar(Im, Chart, Y),
     egd:filledRectangle(Im, {X-2,Y}, {X+2,Y}, egd:color({0,0,0})),
-    tick_text(Im, Font, Yi, {X,Y}, Precision, left),
+    tick_text(Im, Font, apply_label_fun(y, Chart, Yi), {X,Y}, Precision, left),
     draw_yticks_lp(Im, Chart, Yi + Yts, Yts, Ymax, Font);
-draw_yticks_lp(_,_,_,_,_,_) -> ok.
+draw_yticks_lp(_,_,_,_,_,_) ->
+    ok.
 
 draw_xticks_lp(Im, Chart, Xi, Xts, Xmax, Font) when Xi < Xmax ->
     {X,_}           = xy2chart({Xi,0}, Chart),
@@ -326,9 +326,17 @@ draw_xticks_lp(Im, Chart, Xi, Xts, Xmax, Font) when Xi < Xmax ->
     { Precision, _} = Chart#chart.precision,
     draw_perf_xbar(Im, Chart, X),
     egd:filledRectangle(Im, {X,Y-2}, {X,Y+2}, egd:color({0,0,0})),
-    tick_text(Im, Font, Xi, {X,Y}, Precision, below),
+    tick_text(Im, Font, apply_label_fun(x, Chart, Xi), {X,Y}, Precision, below),
     draw_xticks_lp(Im, Chart, Xi + Xts, Xts, Xmax, Font);
-draw_xticks_lp(_,_,_,_,_,_) -> ok.
+draw_xticks_lp(_,_,_,_,_,_) ->
+    ok.
+
+apply_label_fun(Axis, Chart, Value) ->
+    Fun = case Axis =:= x of
+              true  -> Chart#chart.x_label_fun;
+              false -> Chart#chart.y_label_fun
+          end,
+    Fun(Value).
 
 tick_text(Im, Font, Tick, {X,Y}, Precision, Orientation) ->
     String = string(Tick, Precision),
