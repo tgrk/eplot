@@ -231,17 +231,17 @@ draw_graphs([{_, Data} | Datas], ColorIndex, Chart, Im) ->
     draw_graph(GraphData, Color, Im),
     draw_graphs(Datas, ColorIndex + 1, Chart, Im).
 
-draw_graph([], _,_) -> ok;
-draw_graph([Pt1,Pt2|Data], Color, Im) ->
+draw_graph([], _, _) -> ok;
+draw_graph([Pt1, Pt2 | Data], Color, Im) ->
     draw_graph_dot(Pt1, Color, Im),
     draw_graph_line(Pt1,Pt2, Color, Im),
-    draw_graph([Pt2|Data], Color, Im);
+    draw_graph([Pt2 | Data], Color, Im);
 
-draw_graph([Pt|Data], Color, Im) ->
+draw_graph([Pt | Data], Color, Im) ->
     draw_graph_dot(Pt, Color, Im),
     draw_graph(Data, Color, Im).
 
-draw_graph_dot({X,Y}, Color, Im) ->
+draw_graph_dot({X, Y}, Color, Im) ->
     egd:filledEllipse(Im, {X - 3, Y - 3}, {X + 3, Y + 3}, Color);
 draw_graph_dot({X,Y,Ey}, Color, Im) ->
     egd:line(Im, {X, Y - Ey}, {X, Y + Ey}, Color),
@@ -249,8 +249,8 @@ draw_graph_dot({X,Y,Ey}, Color, Im) ->
     egd:line(Im, {X - 4, Y + Ey}, {X + 4, Y + Ey}, Color),
     egd:filledEllipse(Im, {X - 3, Y - 3}, {X + 3, Y + 3}, Color).
 
-draw_graph_line({X1,Y1,_},{X2,Y2,_}, Color, Im) ->
-    egd:line(Im, {X1,Y1}, {X2,Y2}, Color);
+draw_graph_line({X1, Y1, _},{X2 , Y2, _}, Color, Im) ->
+    egd:line(Im, {X1, Y1}, {X2, Y2}, Color);
 draw_graph_line(Pt1, Pt2, Color, Im) ->
     egd:line(Im, Pt1, Pt2, Color).
 
@@ -369,16 +369,19 @@ draw_perf_xbar(Im, Chart, Xi) ->
       end, lists:seq(Yu,Yl,Lw)),
     ok.
 
-bar2d_convert_data(Data) -> bar2d_convert_data(Data, 0,{[], []}).
-bar2d_convert_data([], _, {ColorMap, Out}) -> {lists:reverse(ColorMap), lists:sort(Out)};
+bar2d_convert_data(Data) ->
+    bar2d_convert_data(Data, 0,{[], []}).
+bar2d_convert_data([], _, {ColorMap, Out}) ->
+    {lists:reverse(ColorMap), lists:sort(Out)};
 bar2d_convert_data([{Set, KVs}|Data], ColorIndex, {ColorMap, Out}) ->
     Color = egd_colorscheme:select(default, ColorIndex),
     bar2d_convert_data(Data, ColorIndex + 1, {[{Set,Color}|ColorMap], bar2d_convert_data_kvs(KVs, Set, Color, Out)}).
 
-bar2d_convert_data_kvs([], _,_, Out) -> Out;
-bar2d_convert_data_kvs([{Key, Value,_} | KVs], Set, Color, Out) ->
+bar2d_convert_data_kvs([], _, _, Out) ->
+    Out;
+bar2d_convert_data_kvs([{Key, Value, _} | KVs], Set, Color, Out) ->
     bar2d_convert_data_kvs([{Key, Value} | KVs], Set, Color, Out);
-bar2d_convert_data_kvs([{Key, Value}|KVs], Set, Color, Out) ->
+bar2d_convert_data_kvs([{Key, Value} | KVs], Set, Color, Out) ->
     case proplists:get_value(Key, Out) of
         undefined ->
             bar2d_convert_data_kvs(KVs, Set, Color, [{Key, [{{Color, Set}, Value}]}|Out]);
@@ -392,26 +395,26 @@ bar2d_chart(Opts, Data) ->
                                  Vs = [V || {_,V} <- DVs],
                                  Out ++ Vs
                          end, [], Data),
-    Type     = proplists:get_value(type,          Opts, png),
-    Margin   = proplists:get_value(margin,        Opts, 30),
-    Width    = proplists:get_value(width,         Opts, 600),
-    Height   = proplists:get_value(height,        Opts, 600),
-    XrangeMax = proplists:get_value(x_range_max,  Opts, length(Data)),
-    XrangeMin = proplists:get_value(x_range_min,  Opts, 0),
-    YrangeMax = proplists:get_value(y_range_max,  Opts, lists:max(Values)),
-    YrangeMin = proplists:get_value(y_range_min,  Opts, 0),
-    {Yr0,Yr1} = proplists:get_value(y_range,      Opts, {YrangeMin, YrangeMax}),
-    {Xr0,Xr1} = proplists:get_value(x_range,      Opts, {XrangeMin, XrangeMax}),
-    Ranges   = proplists:get_value(ranges,        Opts, {{Xr0, Yr0}, {Xr1,Yr1}}),
-    Ticksize = proplists:get_value(ticksize,      Opts, smart_ticksize(Ranges, 10)),
-    Cw       = proplists:get_value(column_width,  Opts, {ratio, 0.8}),
-    Bw       = proplists:get_value(bar_width,     Opts, {ratio, 1.0}),
-    InfoW    = proplists:get_value(info_box,      Opts, 0),
-    Renderer = proplists:get_value(render_engine, Opts, opaque),
+    Type      = proplists:get_value(type,          Opts, png),
+    Margin    = proplists:get_value(margin,        Opts, 30),
+    Width     = proplists:get_value(width,         Opts, 600),
+    Height    = proplists:get_value(height,        Opts, 600),
+    XrangeMax = proplists:get_value(x_range_max,   Opts, length(Data)),
+    XrangeMin = proplists:get_value(x_range_min,   Opts, 0),
+    YrangeMax = proplists:get_value(y_range_max,   Opts, lists:max(Values)),
+    YrangeMin = proplists:get_value(y_range_min,   Opts, 0),
+    {Yr0,Yr1} = proplists:get_value(y_range,       Opts, {YrangeMin, YrangeMax}),
+    {Xr0,Xr1} = proplists:get_value(x_range,       Opts, {XrangeMin, XrangeMax}),
+    Ranges    = proplists:get_value(ranges,        Opts, {{Xr0, Yr0}, {Xr1,Yr1}}),
+    Ticksize  = proplists:get_value(ticksize,      Opts, smart_ticksize(Ranges, 10)),
+    Cw        = proplists:get_value(column_width,  Opts, {ratio, 0.8}),
+    Bw        = proplists:get_value(bar_width,     Opts, {ratio, 1.0}),
+    InfoW     = proplists:get_value(info_box,      Opts, 0),
+    Renderer  = proplists:get_value(render_engine, Opts, opaque),
 
     %% colors
-    BGC      = proplists:get_value(bg_rgba,       Opts, {230, 230, 255, 255}),
-    MGC      = proplists:get_value(margin_rgba,   Opts, {255, 255, 255, 255}),
+    BGC       = proplists:get_value(bg_rgba,       Opts, {230, 230, 255, 255}),
+    MGC       = proplists:get_value(margin_rgba,   Opts, {255, 255, 255, 255}),
 
     %% bounding box
     IBBX     = {{Width - Margin - InfoW, Margin}, {Width - Margin, Height - Margin}},
