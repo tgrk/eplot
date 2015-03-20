@@ -1,12 +1,9 @@
 %%
-%% TODO: * fonts loading. what happens when font is missing?
-%%       * y_label_fun (eg TS to weekday name)
-%%       * graph colors
-%%       * fix croping margin
-%%       * lines color
+%% TODO: * fix croping margin
 %%       * vertical, horizontal, no lines
 %%       * antialiasing?
 %%       * performance?
+%%       * fonts loading. what happens when font is missing?
 %%
 -module(egd_chart).
 
@@ -16,7 +13,7 @@
          bar2d/1,
          bar2d/2
         ]).
--export([smart_ticksize/3]).
+-export([smart_ticksize/3, calculate_ticks_value/2]).
 
 %% Types
 -type data() :: list({any(), any()}).
@@ -34,6 +31,7 @@
           width         = 160,                  % Total chart width
           height        = 160,                  % Total chart height
           dxdy          = {1.0,1.0},
+          ticktype      = {dash, x, y},         % Tick eg. {dash, x, y}, {line, x}
           ticksize      = {10,10},
           precision     = {2,2},
           font          = ?DEFAULT_FONT,
@@ -42,6 +40,7 @@
           bg_rgba       = {230, 230, 255, 255}, % graph background color
           margin_rgba   = {255, 255, 255, 255}, % margin background color
           graph_rgba    = undefined,            % use colorscheme colors
+          tick_rgba     = {130,130,130},        % use colorscheme colors
 
           %% graph specific
           x_label       = "X",
@@ -76,31 +75,36 @@ graph(Data, Options) ->
     {Pt1, Pt2} = Chart#chart.bbx,
     egd:filledRectangle(Im, Pt1, Pt2, BgColor),
 
-    % Fonts? Check for text enabling
+    %% use external fonts
     Font = load_font(Chart),
 
+    %% draw linear graph
     draw_graphs(Data, Chart, Im),
 
-    %% estetic crop, necessary?
+    %% mask everything outside of bbx
     {{X0,Y0}, {X1,Y1}} = Chart#chart.bbx,
     W = Chart#chart.width,
     H = Chart#chart.height,
-    White = egd:color(Chart#chart.margin_rgba),
-    egd:filledRectangle(Im, {0,0}, {X0-1,H}, White),
-    egd:filledRectangle(Im, {X1+1,0}, {W,H}, White),
-    egd:filledRectangle(Im, {0,0}, {W,Y0-1}, White),
-    egd:filledRectangle(Im, {0,Y1+1}, {W,H}, White),
+    egd:filledRectangle(Im, {0, 0},      {X0 - 1, H}, BgColor),
+    egd:filledRectangle(Im, {X1 + 1, 0}, {W, H},      BgColor),
+    egd:filledRectangle(Im, {0, 0},      {W, Y0 - 1}, BgColor),
+    egd:filledRectangle(Im, {0, Y1 + 1}, {W, H},      BgColor),
 
+    %% draw grid
     draw_ticks(Chart, Im, Font),
 
-    draw_origo_lines(Chart, Im), % draw origo crosshair
+    %% draw graph box
+    draw_origo_lines(Chart, Im),
 
+    %% draw graph legend
     draw_graph_names(Data, Chart, Font, Im),
 
+    %% draw axis labels
     draw_xlabel(Chart, Im, Font),
     draw_ylabel(Chart, Im, Font),
 
     render_graph(Im, Chart).
+
 
 %% @doc
 %% Abstract:
@@ -163,20 +167,21 @@ graph_chart(Opts, Data) ->
 
     Precision  = precision_level(Ranges, 10),
     {TsX, TsY} = smart_ticksize(Ranges, 10),
+    TickType   = proplists:get_value(ticktype,      Opts, {dash, x, y}),
     XTicksize  = proplists:get_value(x_ticksize,    Opts, TsX),
     YTicksize  = proplists:get_value(y_ticksize,    Opts, TsY),
     Ticksize   = proplists:get_value(ticksize,      Opts, {XTicksize, YTicksize}),
     Margin     = proplists:get_value(margin,        Opts, 30),
     BGC        = proplists:get_value(bg_rgba,       Opts, {230, 230, 255, 255}),
     MGC        = proplists:get_value(margin_rgba,   Opts, {230, 230, 255, 255}),
-    GC         = proplists:get_value(graph_rgba,    Opts, undefined),
+    GGC        = proplists:get_value(graph_rgba,    Opts, undefined),
+    TGC        = proplists:get_value(tick_rgba,     Opts, {130, 130, 130}),
     Renderer   = proplists:get_value(render_engine, Opts, opaque),
 
     BBX        = {{Margin, Margin}, {Width - Margin, Height - Margin}},
     DxDy       = update_dxdy(Ranges,BBX),
 
     %%TODO: validate opts eg ticksize cannot be {0,0}
-
     #chart{
        type          = Type,
        width         = Width,
@@ -187,6 +192,7 @@ graph_chart(Opts, Data) ->
        y_label_fun   = YlabelFun,
        ranges        = Ranges,
        precision     = Precision,
+       ticktype      = TickType,
        ticksize      = Ticksize,
        margin        = Margin,
        bbx           = BBX,
@@ -194,7 +200,8 @@ graph_chart(Opts, Data) ->
        render_engine = Renderer,
        bg_rgba       = BGC,
        margin_rgba   = MGC,
-       graph_rgba    = GC
+       graph_rgba    = GGC,
+       tick_rgba     = TGC
     }.
 
 draw_ylabel(Chart, Im, Font) ->
@@ -294,43 +301,61 @@ draw_origo_lines(Chart, Im) ->
     egd:rectangle(Im, {X0,Y0}, {X1,Y1}, Black),
     ok.
 
+%%TODO: move to bottom
+calculate_ticks_value(Range, TickSize) when Range < 0 ->
+    trunc(Range / TickSize) * TickSize;
+calculate_ticks_value(Range, TickSize)  ->
+    (trunc(Range / TickSize) + 1) * TickSize.
+
+calculate_ticks_gap(line = TicksType) -> 0;
+calculate_ticks_gap(dash = TicksType) -> 2.
+
 %% new ticks
-draw_ticks(Chart, Im, Font) ->
+draw_ticks(#chart{ticktype = {_Shape, x, y}} = Chart, Im, Font) ->
     {Xts, Yts} = Chart#chart.ticksize,
     {{Xmin,Ymin}, {Xmax,Ymax}} = Chart#chart.ranges,
-    Ys = case Ymin of
-             Ymin when Ymin < 0 -> trunc(Ymin/Yts) * Yts;
-             _ -> (trunc(Ymin/Yts) + 1) * Yts
-    end,
-    Xs = case Xmin of
-             Xmin when Xmin < 0 -> trunc(Xmin/Xts) * Xts;
-             _ -> (trunc(Xmin/Xts) + 1) * Xts
-         end,
+    Ys = calculate_ticks_value(Ymin, Yts),
+    Xs = calculate_ticks_value(Xmin, Xts),
     draw_yticks_lp(Im, Chart, Ys, Yts, Ymax, Font),
-    draw_xticks_lp(Im, Chart, Xs, Xts, Xmax, Font).
+    draw_xticks_lp(Im, Chart, Xs, Xts, Xmax, Font);
+draw_ticks(#chart{ticktype = {_Shape, x}} = Chart, Im, Font) ->
+    {Xts, _Yts} = Chart#chart.ticksize,
+    {{Xmin,_Ymin}, {Xmax,_Ymax}} = Chart#chart.ranges,
+    Xs = calculate_ticks_value(Xmin, Xts),
+    draw_xticks_lp(Im, Chart, Xs, Xts, Xmax, Font);
+draw_ticks(#chart{ticktype = {_Shape, y}} = Chart, Im, Font) ->
+    {_Xts, Yts} = Chart#chart.ticksize,
+    {{_Xmin,Ymin}, {_Xmax,Ymax}} = Chart#chart.ranges,
+    Ys = calculate_ticks_value(Ymin, Yts),
+    draw_yticks_lp(Im, Chart, Ys, Yts, Ymax, Font).
 
 draw_yticks_lp(Im, Chart, Yi, Yts, Ymax, Font) when Yi < Ymax ->
-    {_,Y}          = xy2chart({0,Yi}, Chart),
-    {{X,_}, _}     = Chart#chart.bbx,
-    {_, Precision} = Chart#chart.precision,
+    {_, Y}          = xy2chart({0, Yi}, Chart),
+    {{X, _}, _}     = Chart#chart.bbx,
+    {_, Precision}  = Chart#chart.precision,
+    Gap             = calculate_ticks_gap(element(1, Chart#chart.ticktype)),
+
     draw_perf_ybar(Im, Chart, Y),
-    egd:filledRectangle(Im, {X-2,Y}, {X+2,Y}, egd:color({0,0,0})),
-    tick_text(Im, Font, apply_label_fun(y, Chart, Yi), {X,Y}, Precision, left),
+    egd:filledRectangle(Im, {X - Gap,Y}, {X + Gap, Y}, egd:color({0,0,0})),
+    tick_text(Im, Font, apply_label_fun(y, Chart, Yi), {X, Y}, Precision, left),
     draw_yticks_lp(Im, Chart, Yi + Yts, Yts, Ymax, Font);
 draw_yticks_lp(_,_,_,_,_,_) ->
     ok.
 
 draw_xticks_lp(Im, Chart, Xi, Xts, Xmax, Font) when Xi < Xmax ->
-    {X,_}           = xy2chart({Xi,0}, Chart),
-    {_, {_,Y}}      = Chart#chart.bbx,
-    { Precision, _} = Chart#chart.precision,
+    {X, _}          = xy2chart({Xi,0}, Chart),
+    {_, {_, Y}}     = Chart#chart.bbx,
+    {Precision, _}  = Chart#chart.precision,
+    Gap             = calculate_ticks_gap(element(1, Chart#chart.ticktype)),
+
     draw_perf_xbar(Im, Chart, X),
-    egd:filledRectangle(Im, {X,Y-2}, {X,Y+2}, egd:color({0,0,0})),
-    tick_text(Im, Font, apply_label_fun(x, Chart, Xi), {X,Y}, Precision, below),
+    egd:filledRectangle(Im, {X ,Y - Gap}, {X, Y + Gap}, egd:color({0,0,0})),
+    tick_text(Im, Font, apply_label_fun(x, Chart, Xi), {X, Y}, Precision, below),
     draw_xticks_lp(Im, Chart, Xi + Xts, Xts, Xmax, Font);
 draw_xticks_lp(_,_,_,_,_,_) ->
     ok.
 
+%%TODO: move to bottom
 apply_label_fun(Axis, Chart, Value) ->
     Fun = case Axis =:= x of
               true  -> Chart#chart.x_label_fun;
@@ -342,7 +367,7 @@ tick_text(Im, Font, Tick, {X,Y}, Precision, Orientation) ->
     String = string(Tick, Precision),
     L = length(String),
     {Xl,Yl} = egd_font:size(Font),
-    PxL = L*Xl,
+    PxL = L * Xl,
     {Xo,Yo} = case Orientation of
                   above -> {-round(PxL/2), -Yl - 3};
                   below -> {-round(PxL/2), 3};
@@ -358,7 +383,7 @@ draw_perf_ybar(Im, Chart, Yi) ->
     Lw = 10,
     {{X0,_},{X1,_}} = Chart#chart.bbx,
     [Xl,Xr] = lists:sort([X0,X1]),
-    Color = egd:color({180,180,190}),
+    Color = egd:color(Chart#chart.tick_rgba),
     lists:foreach(
       fun(X) ->
               egd:filledRectangle(Im, {X,Yi}, {X+Pw, Yi}, Color)
@@ -370,7 +395,7 @@ draw_perf_xbar(Im, Chart, Xi) ->
     Lw = 10,
     {{_,Y0},{_,Y1}} = Chart#chart.bbx,
     [Yu,Yl] = lists:sort([Y0,Y1]),
-    Color = egd:color({130,130,130}),
+    Color = egd:color(Chart#chart.tick_rgba),
     lists:foreach(
       fun(Y) ->
               egd:filledRectangle(Im, {Xi,Y}, {Xi, Y+Pw}, Color)
@@ -407,6 +432,7 @@ bar2d_chart(Opts, Data) ->
     Margin    = proplists:get_value(margin,        Opts, 30),
     Width     = proplists:get_value(width,         Opts, 600),
     Height    = proplists:get_value(height,        Opts, 600),
+
     XrangeMax = proplists:get_value(x_range_max,   Opts, length(Data)),
     XrangeMin = proplists:get_value(x_range_min,   Opts, 0),
     YrangeMax = proplists:get_value(y_range_max,   Opts, lists:max(Values)),
@@ -414,6 +440,8 @@ bar2d_chart(Opts, Data) ->
     {Yr0,Yr1} = proplists:get_value(y_range,       Opts, {YrangeMin, YrangeMax}),
     {Xr0,Xr1} = proplists:get_value(x_range,       Opts, {XrangeMin, XrangeMax}),
     Ranges    = proplists:get_value(ranges,        Opts, {{Xr0, Yr0}, {Xr1,Yr1}}),
+
+    TickType  = proplists:get_value(ticktype,      Opts, {dash, x, y}),
     Ticksize  = proplists:get_value(ticksize,      Opts, smart_ticksize(Ranges, 10)),
     Cw        = proplists:get_value(column_width,  Opts, {ratio, 0.8}),
     Bw        = proplists:get_value(bar_width,     Opts, {ratio, 1.0}),
@@ -423,6 +451,7 @@ bar2d_chart(Opts, Data) ->
     %% colors
     BGC       = proplists:get_value(bg_rgba,       Opts, {230, 230, 255, 255}),
     MGC       = proplists:get_value(margin_rgba,   Opts, {255, 255, 255, 255}),
+    TGC       = proplists:get_value(tick_rgba,     Opts, {130,130,130}),
 
     %% bounding box
     IBBX     = {{Width - Margin - InfoW, Margin}, {Width - Margin, Height - Margin}},
@@ -435,6 +464,7 @@ bar2d_chart(Opts, Data) ->
        width           = Width,
        height          = Height,
        ranges          = Ranges,
+       ticktype        = TickType,
        ticksize        = Ticksize,
        bbx             = BBX,
        ibbx            = IBBX,
@@ -443,6 +473,7 @@ bar2d_chart(Opts, Data) ->
        bar_width       = Bw,
        margin_rgba     = MGC,
        bg_rgba         = BGC,
+       tick_rgba       = TGC,
        render_engine   = Renderer
     }.
 
@@ -545,8 +576,8 @@ draw_bar2d_data_bars([{{Color,_Set}, Value}|Bars], Chart, Font, Im, Bx, Bo,CS) -
     egd:text(Im, Tpt, Font, String, Black),
 
 
-    Pt1 = {trunc(Bx - Bwb/2), Y},
-    Pt2 = {trunc(Bx + Bwb/2), Y1},
+    Pt1 = {trunc(Bx - Bwb / 2), Y},
+    Pt2 = {trunc(Bx + Bwb / 2), Y1},
     egd:filledRectangle(Im, Pt1, Pt2, Color),
     egd:rectangle(Im, Pt1, Pt2, Black),
     draw_bar2d_data_bars(Bars, Chart, Font, Im, Bx + Bo, Bo, CS + CS).
@@ -564,12 +595,12 @@ xy2chart({X,Y,Error}, Chart) ->
     {Xc,Yc} = xy2chart({X,Y}, #chart{ dxdy = {_,Dy} } = Chart),
     {Xc, Yc, round(Dy*Error)}.
 
-ranges([{_Name, Es}|Data]) when is_list(Es) ->
+ranges([{_Name, Es} | Data]) when is_list(Es) ->
     Ranges = xy_minmax(Es),
     ranges(Data, Ranges).
 
 ranges([], Ranges) -> Ranges;
-ranges([{_Name, Es}|Data], CoRanges) when is_list(Es) ->
+ranges([{_Name, Es} | Data], CoRanges) when is_list(Es) ->
     Ranges = xy_minmax(Es),
     ranges(Data, xy_resulting_ranges(Ranges, CoRanges)).
 
@@ -603,7 +634,7 @@ precision_level({{X0, Y0}, {X1, Y1}}, N) ->
 
 precision_level(S, E, N) when is_number(S), is_number(E) ->
     % Calculate stepsize then 'humanize' the value to a human pleasing format.
-    R = abs((E - S))/N,
+    R = abs((E - S)) / N,
     if
         abs(R) < ?float_error -> 2;
         true ->
@@ -669,8 +700,9 @@ float_to_maybe_integer_to_string(F, P) ->
     I = trunc(F),
     A = abs(I - F),
     if
-        %% integer
-        A < ?float_error -> s("~w", [I]);
+        A < ?float_error ->
+            %% integer
+            s("~w", [I]);
         true ->
             %% float
             Format = s("~~.~wf", [P]),
